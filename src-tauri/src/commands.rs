@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::State;
 
+use crate::flows::{self, FlowReport};
 use crate::memory::{
     self,
     analytics::Analytics,
@@ -15,6 +16,7 @@ use crate::memory::{
 use crate::plugins::{self, PluginInfo, PluginRecord, PluginRun};
 use crate::settings::{self, Settings};
 use crate::status::{self, Status};
+use crate::storage::{self, StorageReport};
 
 pub struct AppState {
     /// `<app data>/com.normiecore.deja`
@@ -152,6 +154,26 @@ pub fn get_analytics(state: State<'_, AppState>, days: Option<i64>) -> Result<An
     let settings = state.settings_snapshot();
     let conn = memory::open(state.data_dir_override().as_deref())?;
     memory::analytics::compute(&conn, days.unwrap_or(settings.days_default))
+}
+
+/// Process map over the window: cases, directly-follows edges, variants.
+#[tauri::command]
+pub fn get_flows(state: State<'_, AppState>, days: Option<i64>) -> Result<FlowReport, String> {
+    let settings = state.settings_snapshot();
+    let conn = memory::open(state.data_dir_override().as_deref())?;
+    flows::compute(
+        &conn,
+        days.unwrap_or(settings.days_default),
+        &settings.excluded_apps,
+    )
+}
+
+/// Disk breakdown. Expensive (walks the media tree), so it is only called when
+/// the Storage view is open — never from the status poll.
+#[tauri::command]
+pub fn get_storage(state: State<'_, AppState>) -> Result<StorageReport, String> {
+    let conn = memory::open(state.data_dir_override().as_deref())?;
+    Ok(storage::report(&conn, &state.screenpipe_dir()))
 }
 
 #[tauri::command]

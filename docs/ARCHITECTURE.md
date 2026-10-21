@@ -12,10 +12,12 @@ access, and a WebView2 frontend that only ever sees JSON.
                               │
 ┌─────────────────────────────▼───────────────────────────────┐
 │ Rust core (src-tauri/src/)                                  │
-│   commands.rs   the entire IPC surface (13 commands)        │
+│   commands.rs   the entire IPC surface (15 commands)        │
 │   memory/       read-only Screenpipe SQLite                 │
+│   flows.rs      cases → directly-follows graph → variants   │
+│   storage.rs    dbstat + media walk, on demand only         │
 │   plugins.rs    manifest discovery + child-process runner    │
-│   status.rs     /health probe + disk footprint              │
+│   status.rs     /health probe (cheap: metadata only)         │
 │   settings.rs   JSON settings in app data                   │
 └─────────────────────────────────────────────────────────────┘
                               │ read-only

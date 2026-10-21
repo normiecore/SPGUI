@@ -23,7 +23,6 @@ pub struct Status {
     pub last_frame_ts: Option<String>,
     pub uptime_seconds: u64,
     pub monitors: Vec<String>,
-    pub storage_bytes: u64,
     pub db_bytes: u64,
     pub db_path: String,
     pub data_dir: String,
@@ -44,7 +43,6 @@ impl Status {
             last_frame_ts: None,
             uptime_seconds: 0,
             monitors: Vec::new(),
-            storage_bytes: dir_size(data_dir),
             db_bytes: file_size(db_path),
             db_path: db_path.display().to_string(),
             data_dir: data_dir.display().to_string(),
@@ -126,7 +124,6 @@ pub fn probe(port: u16, data_dir: &Path, db_path: &Path) -> Status {
         last_frame_ts: text(&body, &["last_frame_timestamp"]),
         uptime_seconds: num(&body, &["pipeline", "uptime_secs"]),
         monitors,
-        storage_bytes: dir_size(data_dir),
         db_bytes: file_size(db_path),
         db_path: db_path.display().to_string(),
         data_dir: data_dir.display().to_string(),
@@ -135,28 +132,4 @@ pub fn probe(port: u16, data_dir: &Path, db_path: &Path) -> Status {
 
 pub fn file_size(path: &Path) -> u64 {
     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-}
-
-/// Total size of a directory tree, bounded so a huge history cannot stall the UI.
-pub fn dir_size(root: &Path) -> u64 {
-    fn walk(dir: &Path, total: &mut u64, seen: &mut u32) {
-        if *seen > 50_000 {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            *seen += 1;
-            let Ok(meta) = entry.metadata() else { continue };
-            if meta.is_dir() {
-                walk(&entry.path(), total, seen);
-            } else {
-                *total += meta.len();
-            }
-        }
-    }
-
-    let mut total = 0;
-    let mut seen = 0;
-    walk(root, &mut total, &mut seen);
-    total
 }

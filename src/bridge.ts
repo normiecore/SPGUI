@@ -11,11 +11,13 @@ import { mock } from "./mock";
 import type {
   Analytics,
   AppInfo,
+  FlowReport,
   PluginInfo,
   PluginRun,
   SearchHit,
   Settings,
   Status,
+  StorageReport,
   TimelinePage,
 } from "./types";
 
@@ -41,6 +43,10 @@ export const api = {
     call<SearchHit[]>("search_memory", { query, days, kinds, limit }, () => mock.search(query, days, kinds)),
 
   analytics: (days: number) => call<Analytics>("get_analytics", { days }, () => mock.analytics(days)),
+
+  flows: (days: number) => call<FlowReport>("get_flows", { days }, () => mock.flows(days)),
+
+  storage: () => call<StorageReport>("get_storage", {}, () => mock.storage()),
 
   getSettings: () => call<Settings>("get_settings", {}, () => mock.settings()),
 

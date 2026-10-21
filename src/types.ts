@@ -89,6 +89,79 @@ export interface Analytics {
   hourly: number[];
 }
 
+export interface FlowStep {
+  app: string;
+  occurrences: number;
+  cases: number;
+  avgPosition: number;
+}
+
+export interface FlowEdge {
+  from: string;
+  to: string;
+  count: number;
+}
+
+export interface FlowVariant {
+  steps: string[];
+  cases: number;
+  avgMinutes: number;
+  standard: boolean;
+}
+
+export interface FlowReport {
+  days: number;
+  gapSeconds: number;
+  cases: number;
+  activities: number;
+  events: number;
+  avgSteps: number;
+  avgMinutes: number;
+  linearity: number;
+  steps: FlowStep[];
+  edges: FlowEdge[];
+  variants: FlowVariant[];
+  startSteps: [string, number][];
+  endSteps: [string, number][];
+}
+
+export interface TableSize {
+  name: string;
+  bytes: number;
+}
+
+export interface ColumnBytes {
+  label: string;
+  bytes: number;
+  rows: number;
+}
+
+export interface DayMedia {
+  date: string;
+  bytes: number;
+  files: number;
+}
+
+export interface StorageReport {
+  dataDir: string;
+  dbBytes: number;
+  walBytes: number;
+  mediaBytes: number;
+  totalBytes: number;
+  frameFiles: number;
+  frameBytes: number;
+  audioFiles: number;
+  audioBytes: number;
+  tables: TableSize[];
+  columns: ColumnBytes[];
+  mediaByDay: DayMedia[];
+  a11yJsonBytes: number;
+  a11yFrames: number;
+  framesRows: number;
+  mediaOver30dBytes: number;
+  dbstat: boolean;
+}
+
 export interface PluginInfo {
   id: string;
   name: string;

@@ -125,14 +125,18 @@ pub fn page(conn: &Connection, days: i64, limit: i64) -> Result<TimelinePage, St
 /// Build every session in the window, newest first.
 pub fn sessions(conn: &Connection, days: i64, limit: i64) -> Result<Vec<TimelineSession>, String> {
     let modifier = days_modifier(days);
-    let frame_limit = (limit.clamp(1, 5_000)) * 12;
+    // Frames drive session boundaries; 8 per session is generous (Screenpipe
+    // dedupes identical frames) and the hard cap keeps 30-day ranges bounded.
+    let frame_limit = ((limit.clamp(1, 5_000)) * 8).min(6_000);
 
     let mut items: Vec<Item> = Vec::new();
 
     let mut stmt = conn
         .prepare(
+            // Only the first 400 chars are ever shown; pulling full_text (avg
+            // 4 KB, up to megabytes) for thousands of rows is pure waste.
             "SELECT id, timestamp, COALESCE(app_name, 'unknown'), COALESCE(window_name, ''),
-                    browser_url, COALESCE(full_text, ''), snapshot_path
+                    browser_url, SUBSTR(COALESCE(full_text, ''), 1, 400), snapshot_path
                FROM frames
               WHERE datetime(timestamp) >= datetime('now', ?1)
               ORDER BY timestamp DESC

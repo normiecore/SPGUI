@@ -6,10 +6,12 @@
 //! provider seam rather than an assumption baked into the code.
 
 mod commands;
+mod flows;
 mod memory;
 mod plugins;
 mod settings;
 mod status;
+mod storage;
 
 use std::sync::Mutex;
 
@@ -45,6 +47,8 @@ pub fn run() {
             commands::get_timeline,
             commands::search_memory,
             commands::get_analytics,
+            commands::get_flows,
+            commands::get_storage,
             commands::get_settings,
             commands::save_settings,
             commands::list_plugins,

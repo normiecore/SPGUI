@@ -5,11 +5,13 @@
 import type {
   Analytics,
   AppInfo,
+  FlowReport,
   PluginInfo,
   PluginRun,
   SearchHit,
   Settings,
   Status,
+  StorageReport,
   TimelineSession,
 } from "./types";
 
@@ -212,6 +214,89 @@ export const mock = {
   timeline: (days: number) => mockTimeline(days),
   search: (query: string, days: number, kinds: string[]) => mockSearch(query, days, kinds),
   analytics: (days: number) => mockAnalytics(days),
+
+  flows: (days: number): FlowReport => {
+    const steps = [
+      { app: "brave.exe", occurrences: 62, cases: 34, avgPosition: 0.2 },
+      { app: "Code.exe", occurrences: 55, cases: 30, avgPosition: 1.6 },
+      { app: "Hermes.exe", occurrences: 48, cases: 28, avgPosition: 2.4 },
+      { app: "OUTLOOK.EXE", occurrences: 22, cases: 14, avgPosition: 3.1 },
+    ];
+    const edges = [
+      { from: "brave.exe", to: "Code.exe", count: 31 },
+      { from: "Code.exe", to: "Hermes.exe", count: 27 },
+      { from: "Hermes.exe", to: "OUTLOOK.EXE", count: 12 },
+      { from: "Hermes.exe", to: "Code.exe", count: 9 },
+      { from: "OUTLOOK.EXE", to: "brave.exe", count: 6 },
+    ];
+    const variants = [
+      {
+        steps: ["brave.exe", "Code.exe", "Hermes.exe"],
+        cases: 21,
+        avgMinutes: 18,
+        standard: true,
+      },
+      { steps: ["Code.exe", "Hermes.exe", "OUTLOOK.EXE"], cases: 9, avgMinutes: 12, standard: false },
+      { steps: ["brave.exe", "Code.exe"], cases: 5, avgMinutes: 7, standard: false },
+    ];
+    return {
+      days,
+      gapSeconds: 120,
+      cases: 34,
+      activities: 4,
+      events: 187,
+      avgSteps: 5.4,
+      avgMinutes: 16.4,
+      linearity: 0.62,
+      steps,
+      edges,
+      variants,
+      startSteps: [
+        ["brave.exe", 22],
+        ["Code.exe", 9],
+        ["Hermes.exe", 3],
+      ],
+      endSteps: [
+        ["Hermes.exe", 24],
+        ["OUTLOOK.EXE", 7],
+        ["Code.exe", 3],
+      ],
+    };
+  },
+
+  storage: (): StorageReport => ({
+    dataDir: "%USERPROFILE%\\.screenpipe",
+    dbBytes: 68_382_720,
+    walBytes: 15_728_640,
+    mediaBytes: 56_623_104,
+    totalBytes: 140_734_464,
+    frameFiles: 61,
+    frameBytes: 31_457_280,
+    audioFiles: 142,
+    audioBytes: 25_165_824,
+    tables: [
+      { name: "frames", bytes: 41_226_240 },
+      { name: "elements", bytes: 14_422_016 },
+      { name: "idx_elements_frame_source_role", bytes: 2_187_264 },
+      { name: "idx_elements_source_role_text", bytes: 2_174_976 },
+      { name: "elements_fts_data", bytes: 831_488 },
+    ],
+    columns: [
+      { label: "frames.accessibility_tree_json", bytes: 34_313_319, rows: 292 },
+      { label: "frames.full_text", bytes: 1_542_820, rows: 292 },
+      { label: "elements.text", bytes: 6_842_113, rows: 65_069 },
+      { label: "frames.text_json", bytes: 2_571_515, rows: 292 },
+    ],
+    mediaByDay: [
+      { date: "2026-10-21", bytes: 56_623_104, files: 203 },
+      { date: "2026-10-20", bytes: 12_004_992, files: 81 },
+    ],
+    a11yJsonBytes: 34_313_319,
+    a11yFrames: 292,
+    framesRows: 369,
+    mediaOver30dBytes: 0,
+    dbstat: true,
+  }),
 
   settings: (): Settings => ({
     dataDir: "",

@@ -3,12 +3,22 @@ import { RANGES, type ViewContext, type ViewDef } from "./context";
 import type { AppInfo, Settings, Status } from "./types";
 import { $, $$, esc, fmtBytes, notice, relTime, toast } from "./ui";
 import { analyticsView } from "./views/analytics";
+import { flowsView } from "./views/flows";
 import { pluginsView } from "./views/plugins";
 import { searchView } from "./views/search";
 import { settingsView } from "./views/settings";
+import { storageView } from "./views/storage";
 import { timelineView } from "./views/timeline";
 
-const views: ViewDef[] = [timelineView, searchView, analyticsView, pluginsView, settingsView];
+const views: ViewDef[] = [
+  timelineView,
+  searchView,
+  analyticsView,
+  flowsView,
+  storageView,
+  pluginsView,
+  settingsView,
+];
 
 const defaultSettings: Settings = {
   dataDir: "",
@@ -126,7 +136,7 @@ async function renderStatus() {
     ? `Screenpipe ${status.version ?? ""}${status.captureState ? ` · ${status.captureState}` : ""}`.trim()
     : "Screenpipe not detected";
 
-  const parts = [fmtBytes(status.storageBytes), `${fmtBytes(status.dbBytes)} db`];
+  const parts = [`${fmtBytes(status.dbBytes)} db`, `${status.framesCaptured} frames`];
   if (status.lastFrameTs) parts.push(`last ${relTime(status.lastFrameTs)}`);
   storage.textContent = parts.join(" · ");
 }

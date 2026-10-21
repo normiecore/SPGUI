@@ -20,6 +20,8 @@ Nothing leaves your machine. Deja has no network client.
 | **Timeline** | Screenpipe's frames and UI events stitched into work sessions — app, window, time range, duration, frame/event counts, a text preview and a screenshot thumbnail. |
 | **Search** | One query across three FTS5 indexes: frame OCR text, UI-event labels, and audio transcripts. Window filters (24h / 7d / 30d) and per-source toggles. |
 | **Analytics** | Frames / events / transcriptions / apps seen, top apps by volume, hourly distribution, and a daily breakdown table. |
+| **Flows** | Process mining over your own history: a directly-follows map of the apps you move between, the **standard path** you repeat, and every variant (exception) with its case count. |
+| **Storage** | Measured disk usage — per table, per text column, per day of media — plus what a retention policy would actually reclaim. |
 | **Plugins** | Built-in providers (capture, perception, executor) plus user plugins that run as child processes with JSON on stdin. |
 | **Settings** | Screenpipe data folder override, default range, excluded apps, theme, and every path Deja touches. |
 
@@ -122,6 +124,8 @@ Screenpipe captured.
 - [x] Read-only SQLite layer with session grouping
 - [x] FTS5 search across frames / events / audio
 - [x] Analytics
+- [x] Process mining: cases → directly-follows graph → variants
+- [x] Storage accounting (dbstat + media walk) with retention estimates
 - [x] Plugin runner + reference plugin
 - [ ] **Perception provider** — Windows UI Automation (foreground window, a11y
       tree) so Deja can tell what is happening *now*, not just what was captured
@@ -133,6 +137,34 @@ Screenpipe captured.
 The first two are the gate for anything agent-like: without cheap, reliable
 perception and execution there is no agent, only a viewer. They are listed as
 `planned` providers in the Plugins view rather than pretending to exist.
+
+## Plug it into Claude (or Cursor, Codex, Cline, Warp)
+
+You don't need Deja for this — Screenpipe ships an MCP server with 35 tools that
+reads the same database. Verified working against this install:
+
+```bash
+# Claude Code
+claude mcp add screenpipe --transport stdio --scope user -- npx -y screenpipe-mcp
+```
+
+Claude Desktop: add to `%AppData%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "screenpipe": { "command": "npx", "args": ["-y", "screenpipe-mcp"], "transport": "stdio" }
+  }
+}
+```
+
+**ChatGPT cannot use this as-is**: it only connects to remote HTTPS MCP servers,
+never `localhost`. You need a tunnel (OpenAI Secure MCP Tunnel, Cloudflare, ngrok)
+in front of an HTTP MCP endpoint.
+
+Deja deliberately ships **no** MCP server of its own — that would duplicate what
+already works. See [docs/COMPARISON.md](docs/COMPARISON.md) for the full
+comparison with Screenpipe's own app, the storage findings, and the honest gap list.
 
 ## Privacy
 

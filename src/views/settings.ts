@@ -87,7 +87,7 @@ export const settingsView: ViewDef = {
           <dt>Deja data</dt><dd>${esc(info.dataDir)}</dd>
           <dt>Plugins</dt><dd>${esc(info.pluginsDir)}</dd>
           <dt>Settings file</dt><dd>${esc(info.settingsPath)}</dd>
-          <dt>On disk</dt><dd>${esc(fmtBytes(status?.storageBytes ?? 0))} (${esc(fmtBytes(status?.dbBytes ?? 0))} database)</dd>
+          <dt>Database</dt><dd>${esc(fmtBytes(status?.dbBytes ?? 0))} — full disk breakdown on the Storage tab</dd>
         </dl>
       </div>
 

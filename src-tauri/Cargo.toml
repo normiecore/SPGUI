@@ -1,6 +1,6 @@
 [package]
 name = "deja"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deja — a local memory and workflow layer for Screenpipe on Windows"
 authors = ["normiecore"]
 edition = "2021"
