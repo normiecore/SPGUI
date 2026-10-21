@@ -45,7 +45,8 @@ Deja is built to be left alone for an eight-hour workday:
 - **It owns the recorder.** On launch it spawns `npx screenpipe record` if the
   API is not already answering, watches `/health`, and restarts with backoff
   (5s → 60s) if it dies. Stop/start/restart are in Settings, and the tray has a
-  restart item. Quitting Deja stops the recorder it started.
+  restart item. Quitting Deja stops the recorder — including one it adopted
+  after a crash, which it finds by port rather than by a handle it no longer holds.
 - **Closing the window hides it.** The app lives in the tray; quitting is an
   explicit tray action. A second launch focuses the running instance instead of
   fighting it for the WebView2 profile.

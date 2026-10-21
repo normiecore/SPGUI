@@ -119,6 +119,9 @@ impl Recorder {
     }
 
     fn spawn(&mut self) -> Result<(), String> {
+        // Never race a survivor for the port.
+        clear_previous(self.port);
+
         let mut args: Vec<String> = vec![
             "-y".into(),
             "screenpipe@latest".into(),
@@ -201,6 +204,55 @@ impl Recorder {
         self.backoff = (self.backoff * 2).min(MAX_BACKOFF);
     }
 }
+
+/// Kill whatever is listening on the recorder port.
+///
+/// Needed when Deja was force-killed: its child survives, gets adopted as
+/// "external", and Stop/Restart would otherwise be no-ops because we own no
+/// child handle. Only ever targets the configured Screenpipe port.
+#[cfg(windows)]
+fn kill_port(port: u16) {
+    let Ok(out) = Command::new("netstat").args(["-ano"]).output() else { return };
+    let text = String::from_utf8_lossy(&out.stdout);
+    let needle = format!(":{port} ");
+    for line in text.lines() {
+        if !line.contains("LISTENING") || !line.contains(&needle) {
+            continue;
+        }
+        if let Some(pid) = line.split_whitespace().last() {
+            let _ = Command::new("taskkill")
+                .args(["/PID", pid, "/T", "/F"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            logging::log(format!("recorder: killed pid {pid} holding port {port}"));
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn kill_port(_port: u16) {}
+
+/// Guarantee the port is free before spawning.
+///
+/// `npx` runs the real `screenpipe.exe` as a grandchild, and killing the wrapper
+/// does not always take the grandchild with it. A survivor keeps :3030 bound, so
+/// the replacement exits immediately and the watchdog flips between starting and
+/// backoff. Screenpipe is the recorder by definition here, so clearing it is the
+/// correct move before we take ownership.
+#[cfg(windows)]
+fn clear_previous(port: u16) {
+    kill_port(port);
+    let _ = Command::new("taskkill")
+        .args(["/IM", "screenpipe.exe", "/T", "/F"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    std::thread::sleep(Duration::from_millis(600));
+}
+
+#[cfg(not(windows))]
+fn clear_previous(_port: u16) {}
 
 fn health_ok(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{port}/health");
@@ -301,7 +353,10 @@ pub fn start(recorder: Arc<Mutex<Recorder>>) {
 pub fn stop(recorder: &Arc<Mutex<Recorder>>) {
     if let Ok(mut guard) = recorder.lock() {
         guard.desired = false;
+        let port = guard.port;
         guard.kill();
+        // An adopted (external) recorder has no child handle, so stop it by port.
+        kill_port(port);
         guard.phase = Phase::Stopped;
         guard.message = None;
     }
@@ -321,7 +376,11 @@ pub fn start_now(recorder: &Arc<Mutex<Recorder>>) {
 pub fn restart(recorder: &Arc<Mutex<Recorder>>) {
     if let Ok(mut guard) = recorder.lock() {
         guard.desired = true;
+        let port = guard.port;
         guard.kill();
+        // Restart means restart: take the port even if we don't own the process,
+        // otherwise a leftover recorder keeps the old flags and nothing changes.
+        kill_port(port);
         guard.restarts = 0;
         guard.backoff = FIRST_BACKOFF;
         guard.phase = Phase::Backoff;
