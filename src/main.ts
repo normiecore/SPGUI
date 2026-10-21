@@ -1,6 +1,6 @@
 import { api, isTauri } from "./bridge";
 import { RANGES, type ViewContext, type ViewDef } from "./context";
-import type { AppInfo, Settings, Status } from "./types";
+import type { AppInfo, RecorderStatus, Settings, Status } from "./types";
 import { $, $$, esc, fmtBytes, notice, relTime, toast } from "./ui";
 import { analyticsView } from "./views/analytics";
 import { flowsView } from "./views/flows";
@@ -25,12 +25,15 @@ const defaultSettings: Settings = {
   daysDefault: 7,
   excludedApps: [],
   theme: "dark",
+  autostart: true,
+  retentionDays: 0,
   pluginsEnabled: {},
   llmModel: "",
 };
 
 let days = 7;
 let status: Status | null = null;
+let recorder: RecorderStatus | null = null;
 let settings: Settings = { ...defaultSettings };
 let appInfo: AppInfo = {
   name: "Deja",
@@ -122,31 +125,57 @@ async function renderStatus() {
   const storage = $("#storage-line");
   if (!dot || !title || !sub || !storage) return;
 
-  if (!status) {
+  const phase = recorder?.phase;
+  const online = status?.online ?? false;
+
+  if (!recorder && !status) {
     dot.className = "dot";
     title.textContent = "Checking…";
     sub.textContent = "Screenpipe";
+    storage.textContent = "";
     return;
   }
 
-  const online = status.online;
-  dot.className = `dot ${online ? "ok" : "bad"}`;
-  title.textContent = online ? "Recording" : "Offline";
-  sub.textContent = online
-    ? `Screenpipe ${status.version ?? ""}${status.captureState ? ` · ${status.captureState}` : ""}`.trim()
-    : "Screenpipe not detected";
+  const label =
+    phase === "running"
+      ? "Recording"
+      : phase === "starting"
+        ? "Starting recorder…"
+        : phase === "backoff"
+          ? "Restarting recorder…"
+          : phase === "failed"
+            ? "Recorder failed"
+            : phase === "stopped"
+              ? "Recorder stopped"
+              : online
+                ? "Recording"
+                : "Offline";
 
-  const parts = [`${fmtBytes(status.dbBytes)} db`, `${status.framesCaptured} frames`];
-  if (status.lastFrameTs) parts.push(`last ${relTime(status.lastFrameTs)}`);
+  const tone =
+    phase === "running" || (!phase && online) ? "ok" : phase === "failed" || (!phase && !online) ? "bad" : "warn";
+
+  dot.className = `dot ${tone}`;
+  title.textContent = label;
+
+  sub.textContent =
+    online && status
+      ? `Screenpipe ${status.version ?? ""}${status.captureState ? ` · ${status.captureState}` : ""}`.trim()
+      : (recorder?.message ?? "Screenpipe not detected");
+
+  const parts = status
+    ? [`${fmtBytes(status.dbBytes)} db`, `${status.framesCaptured} frames`]
+    : [];
+  if (status?.lastFrameTs) parts.push(`last ${relTime(status.lastFrameTs)}`);
   storage.textContent = parts.join(" · ");
 }
 
 async function refreshStatus() {
-  try {
-    status = await api.status();
-  } catch {
-    status = null;
-  }
+  const [nextStatus, nextRecorder] = await Promise.all([
+    api.status().catch(() => null),
+    api.recorderStatus().catch(() => null),
+  ]);
+  status = nextStatus;
+  recorder = nextRecorder;
   await renderStatus();
 }
 

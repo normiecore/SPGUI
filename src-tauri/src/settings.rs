@@ -13,6 +13,10 @@ pub struct Settings {
     pub days_default: i64,
     pub excluded_apps: Vec<String>,
     pub theme: String,
+    /// Start Deja (and therefore the recorder) at login.
+    pub autostart: bool,
+    /// Media retention handed to the recorder; 0 disables pruning.
+    pub retention_days: i64,
     /// Plugin id → enabled. Missing entries fall back to the manifest default.
     pub plugins_enabled: BTreeMap<String, bool>,
     /// Reserved for the future agent layer; the key itself is stored here.
@@ -26,6 +30,8 @@ impl Default for Settings {
             days_default: 7,
             excluded_apps: vec!["deja.exe".into()],
             theme: "dark".into(),
+            autostart: true,
+            retention_days: 0,
             plugins_enabled: BTreeMap::new(),
             llm_model: String::new(),
         }
@@ -64,6 +70,8 @@ mod tests {
         let s = Settings::default();
         assert_eq!(s.days_default, 7);
         assert!(s.data_dir.is_empty());
+        assert!(s.autostart, "a recorder that runs all day should start at login");
+        assert_eq!(s.retention_days, 0, "pruning is opt-in");
     }
 
     #[test]

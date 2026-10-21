@@ -190,8 +190,23 @@ export interface Settings {
   daysDefault: number;
   excludedApps: string[];
   theme: string;
+  autostart: boolean;
+  retentionDays: number;
   pluginsEnabled: Record<string, boolean>;
   llmModel: string;
+}
+
+export type RecorderPhase = "stopped" | "starting" | "running" | "backoff" | "failed";
+
+export interface RecorderStatus {
+  phase: RecorderPhase;
+  desired: boolean;
+  pid: number | null;
+  port: number;
+  message: string | null;
+  restarts: number;
+  retentionDays: number;
+  managed: boolean;
 }
 
 export interface AppInfo {

@@ -38,6 +38,24 @@ Nothing leaves your machine. Deja has no network client.
 Download the `.msi` or `-setup.exe` from [Releases](../../releases), run it, and
 start Screenpipe. Deja picks up the database on launch.
 
+## Running it all day
+
+Deja is built to be left alone for an eight-hour workday:
+
+- **It owns the recorder.** On launch it spawns `npx screenpipe record` if the
+  API is not already answering, watches `/health`, and restarts with backoff
+  (5s → 60s) if it dies. Stop/start/restart are in Settings, and the tray has a
+  restart item. Quitting Deja stops the recorder it started.
+- **Closing the window hides it.** The app lives in the tray; quitting is an
+  explicit tray action. A second launch focuses the running instance instead of
+  fighting it for the WebView2 profile.
+- **Start with Windows** is on by default (Settings → Recorder). The login item
+  launches with `--hidden`, so it lands in the tray without stealing focus.
+- **Media retention** is passed to the recorder (`--retention-days N`). Set it
+  once and disk use stops growing without bound; text is kept.
+- **Logs**: `%APPDATA%\com.normiecore.deja\deja.log` (rotated at 5 MB) and
+  `screenpipe.log` for the recorder's own output.
+
 ## Build from source
 
 ```bash
@@ -127,6 +145,7 @@ Screenpipe captured.
 - [x] Process mining: cases → directly-follows graph → variants
 - [x] Storage accounting (dbstat + media walk) with retention estimates
 - [x] Plugin runner + reference plugin
+- [x] Recorder supervision, tray, start at login, media retention
 - [ ] **Perception provider** — Windows UI Automation (foreground window, a11y
       tree) so Deja can tell what is happening *now*, not just what was captured
 - [ ] **Executor** — SendInput click/keystroke replay, approval-gated

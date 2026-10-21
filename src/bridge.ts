@@ -14,6 +14,7 @@ import type {
   FlowReport,
   PluginInfo,
   PluginRun,
+  RecorderStatus,
   SearchHit,
   Settings,
   Status,
@@ -47,6 +48,17 @@ export const api = {
   flows: (days: number) => call<FlowReport>("get_flows", { days }, () => mock.flows(days)),
 
   storage: () => call<StorageReport>("get_storage", {}, () => mock.storage()),
+
+  recorderStatus: () => call<RecorderStatus>("recorder_status", {}, () => mock.recorder()),
+  recorderStart: () => call<RecorderStatus>("recorder_start", {}, () => mock.recorder()),
+  recorderStop: () =>
+    call<RecorderStatus>("recorder_stop", {}, () => ({ ...mock.recorder(), phase: "stopped" as const, desired: false })),
+  recorderRestart: () => call<RecorderStatus>("recorder_restart", {}, () => mock.recorder()),
+
+  setRetention: (days: number) =>
+    call<RecorderStatus>("set_retention_days", { days }, () => ({ ...mock.recorder(), retentionDays: days })),
+
+  setAutostart: (enabled: boolean) => call<boolean>("set_autostart", { enabled }, () => enabled),
 
   getSettings: () => call<Settings>("get_settings", {}, () => mock.settings()),
 

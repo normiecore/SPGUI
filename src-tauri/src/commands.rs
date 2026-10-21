@@ -6,7 +6,10 @@ use std::sync::Mutex;
 use serde::Serialize;
 use tauri::State;
 
+use std::sync::Arc;
+
 use crate::flows::{self, FlowReport};
+use crate::recorder::{self, Recorder, RecorderStatus};
 use crate::memory::{
     self,
     analytics::Analytics,
@@ -23,6 +26,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub settings: Mutex<Settings>,
     pub plugins: Mutex<Vec<PluginRecord>>,
+    /// Shared with the watchdog thread that owns the Screenpipe process.
+    pub recorder: Arc<Mutex<Recorder>>,
 }
 
 impl AppState {
@@ -268,6 +273,87 @@ pub fn seed_example_plugin(state: State<'_, AppState>) -> Result<String, String>
     let dir = plugins::seed_example(&state.plugins_dir())?;
     state.rediscover();
     Ok(dir.display().to_string())
+}
+
+fn recorder_status_of(state: &AppState) -> RecorderStatus {
+    match state.recorder.lock() {
+        Ok(guard) => guard.status(),
+        Err(_) => RecorderStatus {
+            phase: recorder::Phase::Failed,
+            desired: false,
+            pid: None,
+            port: 3030,
+            message: Some("recorder state is poisoned".into()),
+            restarts: 0,
+            retention_days: 0,
+            managed: false,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn recorder_status(state: State<'_, AppState>) -> RecorderStatus {
+    recorder_status_of(&state)
+}
+
+#[tauri::command]
+pub fn recorder_start(state: State<'_, AppState>) -> RecorderStatus {
+    recorder::start_now(&state.recorder);
+    recorder_status_of(&state)
+}
+
+#[tauri::command]
+pub fn recorder_stop(state: State<'_, AppState>) -> RecorderStatus {
+    recorder::stop(&state.recorder);
+    recorder_status_of(&state)
+}
+
+#[tauri::command]
+pub fn recorder_restart(state: State<'_, AppState>) -> RecorderStatus {
+    recorder::restart(&state.recorder);
+    recorder_status_of(&state)
+}
+
+/// Retention is the recorder's own setting; changing it restarts the process.
+#[tauri::command]
+pub fn set_retention_days(state: State<'_, AppState>, days: i64) -> Result<RecorderStatus, String> {
+    let days = days.clamp(0, 3650);
+    let mut settings = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?;
+    settings.retention_days = days;
+    settings::save(&state.settings_path(), &settings)?;
+    drop(settings);
+
+    if let Ok(mut recorder) = state.recorder.lock() {
+        recorder.retention_days = days;
+    }
+    recorder::restart(&state.recorder);
+    Ok(recorder_status_of(&state))
+}
+
+#[tauri::command]
+pub fn set_autostart(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())?;
+    } else {
+        manager.disable().map_err(|e| e.to_string())?;
+    }
+
+    let mut settings = state
+        .settings
+        .lock()
+        .map_err(|_| "settings lock poisoned".to_string())?;
+    settings.autostart = enabled;
+    settings::save(&state.settings_path(), &settings)?;
+    Ok(manager.is_enabled().unwrap_or(enabled))
 }
 
 /// Open a folder or file in Explorer, or a URL in the default browser.

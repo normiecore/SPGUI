@@ -8,6 +8,7 @@ import type {
   FlowReport,
   PluginInfo,
   PluginRun,
+  RecorderStatus,
   SearchHit,
   Settings,
   Status,
@@ -303,8 +304,21 @@ export const mock = {
     daysDefault: 7,
     excludedApps: ["deja.exe"],
     theme: "dark",
+    autostart: true,
+    retentionDays: 0,
     pluginsEnabled: {},
     llmModel: "",
+  }),
+
+  recorder: (): RecorderStatus => ({
+    phase: "running",
+    desired: true,
+    pid: 4242,
+    port: 3030,
+    message: null,
+    restarts: 0,
+    retentionDays: 0,
+    managed: true,
   }),
 
   plugins: (): PluginInfo[] => [

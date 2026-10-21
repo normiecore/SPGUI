@@ -40,7 +40,9 @@ explicit about what it cannot do.**
 | Audio playback | ✅ | ❌ |
 | Video export of a time range | ✅ | ❌ |
 | MCP server for AI clients | ✅ 35 tools | ❌ — and doesn't need one (see below) |
-| Tray icon, autostart, permission onboarding | ✅ | ❌ |
+| Tray icon, autostart | ✅ | ✅ v0.3 (hide-on-close, `--hidden` login start) |
+| Recorder supervision (start, health watch, restart with backoff) | ✅ | ✅ v0.3 |
+| Permission onboarding | ✅ guided | n/a on Windows (no screen-recording permission) |
 | Network client | optional cloud paths | none at all |
 | Install size | ~100 MB+ (Next.js + WebView2 app) | **7.6 MB binary**, 2.7 MB installer |
 
@@ -146,7 +148,9 @@ memory; Deja's job is the interface, not another endpoint.
    so a flow reads "click Save → switch to Brave → paste" instead of "Code → Brave".
    This is also the bridge to SOPs.
 5. **Meeting view** — speakers and meeting rows already exist in the schema.
-6. **Tray + autostart + permissions onboarding** — table stakes for a daily driver.
+
+*(Tray, autostart, recorder supervision and retention shipped in v0.3 — they were
+the difference between a demo and something you can reboot into.)*
 
 ## The narrow claim Deja can defend
 
