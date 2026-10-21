@@ -170,10 +170,13 @@ pub fn sessions(conn: &Connection, days: i64, limit: i64) -> Result<Vec<Timeline
 
     let mut stmt = conn
         .prepare(
-            "SELECT id, timestamp, COALESCE(app_name, 'unknown'), COALESCE(window_title, ''),
+            // Events with no app attribution cannot be placed in a timeline; they
+            // would otherwise produce rows of \"unknown · 0 frames\" noise.
+            "SELECT id, timestamp, app_name, COALESCE(window_title, ''),
                     event_type, element_role, element_name, text_content, browser_url
                FROM ui_events
               WHERE datetime(timestamp) >= datetime('now', ?1)
+                AND app_name IS NOT NULL AND app_name <> ''
               ORDER BY timestamp DESC
               LIMIT ?2",
         )
