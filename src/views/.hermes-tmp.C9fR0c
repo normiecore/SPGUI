@@ -1,0 +1,173 @@
+import { api, thumbnailUrl } from "../bridge";
+import type { ViewDef } from "../context";
+import type { FlowReport, FlowStep } from "../types";
+import { emptyState, esc, fmtDate, fmtNumber, fmtTime, notice } from "../ui";
+
+const appName = (key: string): string => {
+  const base = key.includes("|") ? key.split("|")[0] : key;
+  const clean = base.replace(/\.exe$/i, "");
+  return clean.length > 26 ? `${clean.slice(0, 25)}…` : clean;
+};
+
+function stepCard(step: FlowStep, index: number, labels: Map<string, string>): string {
+  const thumb = thumbnailUrl(step.snapshot);
+  const branches = step.next.filter(([key]) => key !== step.key);
+
+  const branchLine =
+    branches.length > 1
+      ? `<div class="branch-note">${branches
+          .slice(0, 3)
+          .map(
+            ([key, count]) =>
+              `<span class="pill warn" title="next step">→ ${esc(appName(key))} · ${count}</span>`,
+          )
+          .join(" ")}</div>`
+      : "";
+
+  return `<article class="flow-step">
+    <div class="flow-step-head">
+      <span class="flow-index">${String(index + 1).padStart(2, "0")}</span>
+      <span class="flow-app">${esc(step.app.replace(/\.exe$/i, ""))}</span>
+      <span class="pill">${step.support} ${step.support === 1 ? "run" : "runs"}</span>
+      ${step.handoff ? `<span class="pill accent">carries ${esc(step.handoff)}</span>` : ""}
+    </div>
+    <div class="flow-label" title="${esc(step.label)}">${esc(step.label)}</div>
+    ${step.sample ? `<div class="flow-sample">${esc(step.sample)}</div>` : ""}
+    <div class="flow-evidence">
+      <span class="pill">${esc(fmtDate(step.firstSeen))} ${esc(fmtTime(step.firstSeen))}</span>
+      ${step.entities
+        .filter((entity) => entity.value !== step.handoff)
+        .slice(0, 2)
+        .map((entity) => `<span class="pill">${esc(entity.value)}</span>`)
+        .join("")}
+    </div>
+    ${thumb ? `<img class="flow-thumb" src="${esc(thumb)}" alt="Evidence for ${esc(step.label)}" loading="lazy" />` : ""}
+    ${branchLine}
+  </article>`;
+}
+
+export const flowsView: ViewDef = {
+  id: "flows",
+  title: "Flows",
+  sub: "The work you actually repeat: steps labelled by what was on screen, branch points, and where an identifier moved between apps.",
+  showRange: true,
+
+  async render(ctx) {
+    const report: FlowReport = await api.flows(ctx.days);
+
+    if (!report.cases || !report.standard.length) {
+      ctx.view.innerHTML =
+        notice(
+          "A case needs at least two different steps inside one burst of activity. Widen the range, or use the machine normally for a while.",
+        ) +
+        emptyState(
+          "No flows yet",
+          "Deja groups captured frames into cases — a case ends after a 2 minute pause or 24 steps — then labels each step by its window and the identifiers it contains.",
+        );
+      return;
+    }
+
+    const labels = new Map<string, string>();
+    for (const step of report.standard) labels.set(step.key, step.label);
+    for (const variant of report.variants) {
+      for (const key of variant.steps) {
+        if (!labels.has(key)) labels.set(key, appName(key));
+      }
+    }
+
+    const chain = report.standard
+      .map((step, index) => stepCard(step, index, labels))
+      .join(`<div class="flow-arrow" aria-hidden="true">→</div>`);
+
+    const runs = report.runs
+      .slice(0, 12)
+      .map(
+        (run) => `<tr>
+          <td>${esc(fmtDate(run.startedAt))} ${esc(fmtTime(run.startedAt))}</td>
+          <td class="num">${run.steps.length}</td>
+          <td class="num">${run.minutes.toFixed(1)}m</td>
+          <td>${
+            run.matched
+              ? `<span class="pill ok">standard</span>`
+              : `<span class="pill warn">variant</span>`
+          }</td>
+        </tr>`,
+      )
+      .join("");
+
+    const handoffs = report.handoffs
+      .map(
+        (handoff) => `<tr>
+          <td><code>${esc(handoff.entity)}</code></td>
+          <td>${esc(handoff.from.replace(/\.exe$/i, ""))} → ${esc(handoff.to.replace(/\.exe$/i, ""))}</td>
+          <td class="num">${handoff.count}×</td>
+        </tr>`,
+      )
+      .join("");
+
+    const stdShare = Math.round(report.linearity * 100);
+
+    ctx.view.innerHTML = `
+      <div class="stat-grid">
+        <div class="card stat"><div class="stat-label">Cases</div>
+          <div class="stat-value">${fmtNumber(report.cases)}</div>
+          <div class="stat-sub">split at ${report.gapSeconds}s idle or 24 steps</div></div>
+        <div class="card stat"><div class="stat-label">Steps</div>
+          <div class="stat-value">${fmtNumber(report.activities)}</div>
+          <div class="stat-sub">distinct app + window states</div></div>
+        <div class="card stat"><div class="stat-label">Standard path</div>
+          <div class="stat-value">${stdShare}%</div>
+          <div class="stat-sub">${report.variants[0]?.cases ?? 0} of ${report.cases} runs follow it</div></div>
+        <div class="card stat"><div class="stat-label">Avg case</div>
+          <div class="stat-value">${report.avgMinutes.toFixed(1)}m</div>
+          <div class="stat-sub">${report.avgSteps.toFixed(1)} steps on average</div></div>
+      </div>
+
+      <div class="card">
+        <div class="section-title" style="margin-top:0">Standard path</div>
+        <div class="flow-chain">${chain}</div>
+        <div class="row" style="margin-top:12px">
+          <span class="pill">step = app + window, labelled by the identifier on screen</span>
+          <span class="pill">“carries X” = that identifier arrived from another app</span>
+        </div>
+      </div>
+
+      ${
+        handoffs
+          ? `<div class="card" style="margin-top:12px">
+               <div class="section-title" style="margin-top:0">Handoffs — identifiers that moved between apps</div>
+               <table class="grid">
+                 <thead><tr><th>Identifier</th><th>Path</th><th style="text-align:right">Runs</th></tr></thead>
+                 <tbody>${handoffs}</tbody>
+               </table>
+             </div>`
+          : ""
+      }
+
+      <div class="card" style="margin-top:12px">
+        <div class="section-title" style="margin-top:0">Runs</div>
+        <table class="grid">
+          <thead><tr><th>Started</th><th style="text-align:right">Steps</th><th style="text-align:right">Duration</th><th>Path</th></tr></thead>
+          <tbody>${runs}</tbody>
+        </table>
+        <div class="hint" style="margin-top:8px;color:var(--text-faint);font-size:11.5px">
+          “variant” means the run took a different route than the standard path — the exception to review.
+        </div>
+      </div>
+
+      ${
+        report.suppressedApps.length
+          ? `<div class="notice" style="margin-top:12px"><span aria-hidden="true">ℹ</span>
+             <span>Ignored as noise: ${esc(report.suppressedApps.join(", "))}. Windows shell surfaces say nothing
+             about the work itself.</span></div>`
+          : ""
+      }
+
+      <div class="notice" style="margin-top:12px">
+        <span aria-hidden="true">ℹ</span>
+        <span>Mined locally from captured frames: identifiers are found by string pattern (ids, amounts, emails,
+        URLs), not by a model. Steps are what was on screen, not inferred intents — Deja does not claim to know
+        <em>why</em> you switched apps, only that you did.</span>
+      </div>`;
+  },
+};

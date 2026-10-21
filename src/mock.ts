@@ -217,51 +217,70 @@ export const mock = {
   analytics: (days: number) => mockAnalytics(days),
 
   flows: (days: number): FlowReport => {
-    const steps = [
-      { app: "brave.exe", occurrences: 62, cases: 34, avgPosition: 0.2 },
-      { app: "Code.exe", occurrences: 55, cases: 30, avgPosition: 1.6 },
-      { app: "Hermes.exe", occurrences: 48, cases: 28, avgPosition: 2.4 },
-      { app: "OUTLOOK.EXE", occurrences: 22, cases: 14, avgPosition: 3.1 },
+    const step = (
+      key: string,
+      label: string,
+      app: string,
+      support: number,
+      position: number,
+      handoff: string | null,
+    ) => ({
+      key,
+      label,
+      app,
+      support,
+      occurrences: support,
+      position,
+      firstSeen: new Date(Date.now() - position * 6 * 60_000).toISOString(),
+      snapshot: null,
+      sample: `${label} — matched against the purchase order and the tracker row.`,
+      entities: handoff ? [{ kind: "id", value: handoff }] : [],
+      handoff,
+      next: [] as [string, number][],
+    });
+
+    const standard = [
+      step("OUTLOOK.EXE|inbox", "Inbox · INV-1842", "OUTLOOK.EXE", 3, 0, null),
+      step("erp.exe|purchase orders", "Purchase orders · PO-1048", "erp.exe", 3, 1, null),
+      step("EXCEL.EXE|supplier invoices", "Supplier invoices", "EXCEL.EXE", 3, 2, null),
+      step("EXCEL.EXE|tracker", "Tracker · INV-1842", "EXCEL.EXE", 2, 3, "INV-1842"),
     ];
-    const edges = [
-      { from: "brave.exe", to: "Code.exe", count: 31 },
-      { from: "Code.exe", to: "Hermes.exe", count: 27 },
-      { from: "Hermes.exe", to: "OUTLOOK.EXE", count: 12 },
-      { from: "Hermes.exe", to: "Code.exe", count: 9 },
-      { from: "OUTLOOK.EXE", to: "brave.exe", count: 6 },
-    ];
-    const variants = [
-      {
-        steps: ["brave.exe", "Code.exe", "Hermes.exe"],
-        cases: 21,
-        avgMinutes: 18,
-        standard: true,
-      },
-      { steps: ["Code.exe", "Hermes.exe", "OUTLOOK.EXE"], cases: 9, avgMinutes: 12, standard: false },
-      { steps: ["brave.exe", "Code.exe"], cases: 5, avgMinutes: 7, standard: false },
-    ];
+    standard[2].next = [["EXCEL.EXE|tracker", 2]];
+
     return {
       days,
       gapSeconds: 120,
-      cases: 34,
+      cases: 3,
       activities: 4,
-      events: 187,
-      avgSteps: 5.4,
-      avgMinutes: 16.4,
-      linearity: 0.62,
-      steps,
-      edges,
-      variants,
-      startSteps: [
-        ["brave.exe", 22],
-        ["Code.exe", 9],
-        ["Hermes.exe", 3],
+      events: 64,
+      avgSteps: 4.7,
+      avgMinutes: 11.3,
+      linearity: 0.67,
+      standard,
+      variants: [
+        {
+          steps: standard.map((s) => s.key),
+          cases: 2,
+          avgMinutes: 9.5,
+          standard: true,
+        },
+        {
+          steps: ["OUTLOOK.EXE|inbox", "erp.exe|purchase orders", "EXCEL.EXE|tracker"],
+          cases: 1,
+          avgMinutes: 14.5,
+          standard: false,
+        },
       ],
-      endSteps: [
-        ["Hermes.exe", 24],
-        ["OUTLOOK.EXE", 7],
-        ["Code.exe", 3],
+      runs: [
+        { startedAt: new Date(Date.now() - 3 * 3600_000).toISOString(), minutes: 8.4, steps: standard.map((s) => s.key), matched: true },
+        { startedAt: new Date(Date.now() - 26 * 3600_000).toISOString(), minutes: 9.1, steps: standard.map((s) => s.key), matched: true },
+        { startedAt: new Date(Date.now() - 50 * 3600_000).toISOString(), minutes: 14.5, steps: ["OUTLOOK.EXE|inbox", "erp.exe|purchase orders", "EXCEL.EXE|tracker"], matched: false },
       ],
+      handoffs: [
+        { entity: "INV-1842", from: "OUTLOOK.EXE", to: "EXCEL.EXE", count: 2 },
+        { entity: "PO-1048", from: "erp.exe", to: "EXCEL.EXE", count: 1 },
+      ],
+      suppressedApps: ["LockApp.exe", "ShellHost.exe", "PickerHost.exe"],
     };
   },
 

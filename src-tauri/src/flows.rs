@@ -1,17 +1,20 @@
-//! Process mining over your own screen history.
+//! Process mining over your own screen history — with a semantic step.
 //!
-//! Screenpipe ships an `activity_*` ledger (tasks → intervals → actions) for this
-//! purpose, but nothing populates it out of the box. So Deja derives the same
-//! shape directly from the captures:
+//! Screenpipe's own `activity_*` ledger is empty out of the box and its semantic
+//! parsers (`screenpipe-semantic`, 49 app targets) are opt-in and off by
+//! default. So Deja derives the layer itself, app-agnostically:
 //!
-//!   * **case**  — a burst of activity with no gap longer than `GAP_SECONDS`
-//!   * **step**  — the app that was in front (consecutive repeats collapsed)
-//!   * **edge**  — one step directly followed by another
+//!   * **item**   — one captured frame: app, window, text, snapshot
+//!   * **entity** — an identifier found in that text (id, amount, email, url)
+//!   * **step**   — consecutive items in the same app+window, collapsed; labelled
+//!                  by window title or by the entity that appeared
+//!   * **case**   — a burst of steps split at 2 min idle, 90 min, or 24 steps
+//!   * **handoff**— the same identifier later appearing in a *different* app
 //!
-//! From those we report what a process map needs: the directly-follows graph,
-//! the standard variant (the most common path) and its exceptions.
+//! The point is to read "Invoice INV-1842 → tracker" instead of "brave.exe →
+//! excel.exe". No model is involved; it is string work over what was captured.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, FixedOffset};
 use rusqlite::Connection;
@@ -19,30 +22,78 @@ use serde::Serialize;
 
 use crate::memory::days_modifier;
 
-/// A pause longer than this starts a new case.
 pub const GAP_SECONDS: i64 = 120;
-/// Cases longer than this are split, so an all-day session cannot dominate.
 const MAX_CASE_SECONDS: i64 = 90 * 60;
-/// Continuous capture rarely goes idle for two minutes, so cases are also
-/// bounded by length — otherwise five hours of work becomes one giant case and
-/// "what typically follows what" has nothing to compare against.
 const MAX_CASE_STEPS: usize = 24;
-const MAX_ROWS: i64 = 40_000;
+const MAX_ROWS: i64 = 12_000;
+
+/// Window chrome and shell surfaces that say nothing about what you were doing.
+const NOISE_APPS: &[&str] = &[
+    "lockapp.exe",
+    "shellhost.exe",
+    "pickerhost.exe",
+    "applicationframehost.exe",
+    "searchhost.exe",
+    "startmenuexperiencehost.exe",
+    "textinputhost.exe",
+    "shellexperiencehost.exe",
+    "dwm.exe",
+    "sihost.exe",
+    "deja.exe",
+];
+
+const CHROME: &[&str] = &[
+    "minimize",
+    "maximize",
+    "restore",
+    "close",
+    "hide sidebar",
+    "open settings",
+    "layout editor",
+    "hud mode",
+    "tab search",
+    "minimize tabs",
+];
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct FlowStep {
-    pub app: String,
-    pub occurrences: u64,
-    /// How many cases contain this step.
-    pub cases: u64,
-    /// Mean position in the case, 0-based. Drives the graph layout.
-    pub avg_position: f64,
+pub struct Entity {
+    pub kind: String,
+    pub value: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct FlowEdge {
+pub struct Step {
+    pub key: String,
+    pub label: String,
+    pub app: String,
+    pub support: u64,
+    pub occurrences: u64,
+    pub position: f64,
+    pub first_seen: Option<String>,
+    pub snapshot: Option<String>,
+    pub sample: String,
+    pub entities: Vec<Entity>,
+    /// Entity that arrived here from another app.
+    pub handoff: Option<String>,
+    /// Where this step went next, by count — the branch points.
+    pub next: Vec<(String, u64)>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Run {
+    pub started_at: String,
+    pub minutes: f64,
+    pub steps: Vec<String>,
+    pub matched: bool,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Handoff {
+    pub entity: String,
     pub from: String,
     pub to: String,
     pub count: u64,
@@ -54,7 +105,6 @@ pub struct FlowVariant {
     pub steps: Vec<String>,
     pub cases: u64,
     pub avg_minutes: f64,
-    /// True for the most common path — the "standard process".
     pub standard: bool,
 }
 
@@ -68,169 +118,437 @@ pub struct FlowReport {
     pub events: u64,
     pub avg_steps: f64,
     pub avg_minutes: f64,
-    /// Share of cases that follow the standard variant (0..1).
     pub linearity: f64,
-    pub steps: Vec<FlowStep>,
-    pub edges: Vec<FlowEdge>,
+    pub standard: Vec<Step>,
     pub variants: Vec<FlowVariant>,
-    pub start_steps: Vec<(String, u64)>,
-    pub end_steps: Vec<(String, u64)>,
+    pub runs: Vec<Run>,
+    pub handoffs: Vec<Handoff>,
+    pub suppressed_apps: Vec<String>,
+}
+
+// ── text and entity work ─────────────────────────────────────────────────────
+
+fn clean(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(600));
+    let mut tokens = 0;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if CHROME.iter().any(|c| lower == *c) {
+            continue;
+        }
+        for word in trimmed.split_whitespace() {
+            out.push_str(word);
+            out.push(' ');
+            tokens += 1;
+        }
+        if tokens > 60 || out.len() > 420 {
+            break;
+        }
+    }
+
+    out.trim().to_string()
+}
+
+fn strip(token: &str) -> &str {
+    token.trim_matches(|c: char| {
+        matches!(c, ',' | ';' | '|' | '(' | ')' | '[' | ']' | '<' | '>' | '"' | '\'' | '·' | '—')
+    })
+}
+
+/// Classify one whitespace token as an identifier worth tracking.
+fn classify(token: &str) -> Option<Entity> {
+    let raw = strip(token);
+    if raw.len() < 4 || raw.len() > 80 {
+        return None;
+    }
+
+    let lower = raw.to_ascii_lowercase();
+    if (lower.starts_with("http://") || lower.starts_with("https://")) && raw.len() > 10 {
+        return Some(Entity {
+            kind: "url".into(),
+            value: raw.to_string(),
+        });
+    }
+
+    if raw.contains('@') && raw.contains('.') && !raw.ends_with('.') {
+        return Some(Entity {
+            kind: "email".into(),
+            value: lower,
+        });
+    }
+
+    // Currency: $1,234.56 / €900 / £12
+    let first = raw.chars().next().unwrap_or(' ');
+    if matches!(first, '$' | '€' | '£') {
+        let digits: String = raw.chars().skip(1).filter(|c| c.is_ascii_digit()).collect();
+        // "$4.1" is OCR dandruff from a truncated number, not an amount.
+        if digits.len() < 3 {
+            return None;
+        }
+        let value: String = raw
+            .chars()
+            .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+            .collect();
+        return Some(Entity {
+            kind: "amount".into(),
+            value: format!("{first}{value}"),
+        });
+    }
+
+    // Alphanumeric identifiers: INV-1842, PO-1048, #4471
+    let (prefix, suffix) = match raw.split_once('-') {
+        Some((a, b)) => (a, b),
+        None => return None,
+    };
+
+    let prefix_ok = (2..=8).contains(&prefix.len())
+        && prefix.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    let suffix_ok = (1..=10).contains(&suffix.len())
+        && suffix.chars().all(|c| c.is_ascii_digit());
+
+    if prefix_ok && suffix_ok {
+        return Some(Entity {
+            kind: "id".into(),
+            value: raw.to_string(),
+        });
+    }
+
+    None
+}
+
+fn entities_in(text: &str, limit: usize) -> Vec<Entity> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut out = Vec::new();
+
+    for token in text.split_whitespace() {
+        let Some(entity) = classify(token) else { continue };
+        let dedupe = format!("{}:{}", entity.kind, entity.value);
+        if seen.insert(dedupe) {
+            out.push(entity);
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+
+    out
+}
+
+fn looks_generic(window: &str, app: &str) -> bool {
+    let window = window.trim();
+    if window.is_empty() {
+        return true;
+    }
+    let app_stem = app.split('.').next().unwrap_or(app);
+    window.eq_ignore_ascii_case(app_stem) || window.eq_ignore_ascii_case(app)
+}
+
+fn label_for(app: &str, window: &str, text: &str, entities: &[Entity]) -> String {
+    if let Some(entity) = entities.first() {
+        let base = if looks_generic(window, app) {
+            app.split('.').next().unwrap_or(app).to_string()
+        } else {
+            window.trim().to_string()
+        };
+        return truncate(&format!("{base} · {}", entity.value), 64);
+    }
+
+    if !looks_generic(window, app) {
+        return truncate(window.trim(), 64);
+    }
+
+    // No window title and no identifier: a 64-character slice of OCR text is not
+    // a step name, it is noise with a font. The sample below carries the detail.
+    let _ = text;
+    app.split('.').next().unwrap_or(app).to_string()
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    format!("{}…", cut.trim_end())
+}
+
+// ── mining ──────────────────────────────────────────────────────────────────
+
+struct Item {
+    at: DateTime<FixedOffset>,
+    app: String,
+    window: String,
+    text: String,
+    snapshot: Option<String>,
+    entities: Vec<Entity>,
+}
+
+struct StepInstance {
+    key: String,
+    label: String,
+    app: String,
+    at: DateTime<FixedOffset>,
+    snapshot: Option<String>,
+    sample: String,
+    entities: Vec<Entity>,
 }
 
 struct Case {
-    steps: Vec<String>,
+    steps: Vec<StepInstance>,
     start: DateTime<FixedOffset>,
     end: DateTime<FixedOffset>,
 }
 
-fn parse(raw: &str) -> Option<DateTime<FixedOffset>> {
-    DateTime::parse_from_rfc3339(raw).ok()
+/// A step is an app, not an app+window pair.
+///
+/// Keying on the window title fragmented one working session into 27 "steps"
+/// because every browser tab and editor file is a different title. The window
+/// still labels the step; it just does not define it.
+fn step_key(app: &str) -> String {
+    app.trim().to_ascii_lowercase()
 }
 
-/// Collapse repeated neighbours and drop empty/unknown labels.
-fn normalize(seq: Vec<String>) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for app in seq {
-        let app = app.trim().to_string();
-        if app.is_empty() || app.eq_ignore_ascii_case("unknown") {
+/// Strip URLs, file paths and capture placeholders before a string is used as a
+/// label or a sample — they are long, unstable, and say nothing about the work.
+fn scrub_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for token in text.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        if lower.starts_with("http")
+            || lower.starts_with("file:")
+            || lower.starts_with("c:\\")
+            || lower.starts_with("\\\\")
+            || lower.contains("url_with_credentials")
+            || lower.contains(".exe")
+            || lower.contains(".dll")
+        {
             continue;
         }
-        if out.last().map(|last| last == &app).unwrap_or(false) {
-            continue;
-        }
-        out.push(app);
+        out.push_str(token);
+        out.push(' ');
     }
-    out
+    out.trim().to_string()
 }
 
 pub fn compute(conn: &Connection, days: i64, exclude: &[String]) -> Result<FlowReport, String> {
     let modifier = days_modifier(days);
-    let skipped: Vec<String> = exclude.iter().map(|a| a.to_ascii_lowercase()).collect();
+
+    let mut skipped: BTreeSet<String> = NOISE_APPS.iter().map(|s| s.to_string()).collect();
+    for app in exclude {
+        if !app.trim().is_empty() {
+            skipped.insert(app.trim().to_ascii_lowercase());
+        }
+    }
 
     let mut stmt = conn
         .prepare(
-            "SELECT ts, app FROM (
-                 SELECT timestamp AS ts, app_name AS app
-                   FROM frames
-                  WHERE datetime(timestamp) >= datetime('now', ?1)
-                    AND app_name IS NOT NULL AND app_name <> ''
-                 UNION ALL
-                 SELECT timestamp AS ts, app_name AS app
-                   FROM ui_events
-                  WHERE datetime(timestamp) >= datetime('now', ?1)
-                    AND app_name IS NOT NULL AND app_name <> ''
-             )
-             ORDER BY ts
-             LIMIT ?2",
+            "SELECT timestamp, COALESCE(app_name, ''), COALESCE(window_name, ''),
+                    COALESCE(full_text, ''), snapshot_path
+               FROM frames
+              WHERE datetime(timestamp) >= datetime('now', ?1)
+                AND app_name IS NOT NULL AND app_name <> ''
+              ORDER BY timestamp DESC
+              LIMIT ?2",
         )
         .map_err(|e| format!("flow query failed to prepare: {e}"))?;
 
     let rows = stmt
         .query_map(rusqlite::params![modifier, MAX_ROWS], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
         })
         .map_err(|e| format!("flow query failed: {e}"))?;
 
-    // ── build cases ─────────────────────────────────────────────────────────
-    let mut cases: Vec<Case> = Vec::new();
-    let mut current: Vec<String> = Vec::new();
-    let mut case_start: Option<DateTime<FixedOffset>> = None;
-    let mut last: Option<DateTime<FixedOffset>> = None;
-    let mut events = 0u64;
-    // Distinct apps seen in the case so far — the cap counts real transitions,
-    // not raw events, or a burst in one app would fill a case by itself.
-    let mut distinct = 0usize;
-    let mut last_raw = String::new();
+    let mut items: Vec<Item> = Vec::new();
+    let mut suppressed: BTreeSet<String> = BTreeSet::new();
 
-    for (ts, app) in rows.flatten() {
-        let Some(at) = parse(&ts) else { continue };
-        let lowered = app.to_ascii_lowercase();
-        if skipped.iter().any(|s| !s.is_empty() && s == &lowered) {
+    for (ts, app, window, full_text, snapshot) in rows.flatten() {
+        let Ok(at) = DateTime::parse_from_rfc3339(&ts) else { continue };
+        let lower = app.to_ascii_lowercase();
+        if skipped.contains(&lower) {
+            suppressed.insert(app.clone());
             continue;
         }
-        events += 1;
 
+        let text = scrub_text(&clean(&full_text));
+        let entities = entities_in(&text, 4);
+        items.push(Item {
+            at,
+            app,
+            window,
+            text,
+            snapshot,
+            entities,
+        });
+    }
+
+    items.reverse(); // oldest first
+    let events = items.len() as u64;
+
+    // ── cases ───────────────────────────────────────────────────────────────
+    let mut cases: Vec<Case> = Vec::new();
+    let mut current: Vec<StepInstance> = Vec::new();
+    let mut case_start: Option<DateTime<FixedOffset>> = None;
+    let mut last: Option<DateTime<FixedOffset>> = None;
+    let mut last_key = String::new();
+
+    let flush = |steps: &mut Vec<StepInstance>, start: Option<DateTime<FixedOffset>>, end: Option<DateTime<FixedOffset>>, cases: &mut Vec<Case>| {
+        if let (Some(start), Some(end)) = (start, end) {
+            if steps.len() >= 2 {
+                cases.push(Case {
+                    steps: std::mem::take(steps),
+                    start,
+                    end,
+                });
+                return;
+            }
+        }
+        steps.clear();
+    };
+
+    for item in items {
+        let key = step_key(&item.app);
         let new_case = match (last, case_start) {
             (Some(prev), Some(start)) => {
-                (at - prev).num_seconds() > GAP_SECONDS
-                    || (at - start).num_seconds() > MAX_CASE_SECONDS
-                    || distinct >= MAX_CASE_STEPS
+                (item.at - prev).num_seconds() > GAP_SECONDS
+                    || (item.at - start).num_seconds() > MAX_CASE_SECONDS
+                    || current.len() >= MAX_CASE_STEPS
             }
             _ => true,
         };
 
         if new_case {
-            if let (Some(start), Some(end)) = (case_start, last) {
-                if !current.is_empty() {
-                    cases.push(Case {
-                        steps: normalize(std::mem::take(&mut current)),
-                        start,
-                        end,
-                    });
+            flush(&mut current, case_start, last, &mut cases);
+            case_start = Some(item.at);
+            last_key.clear();
+        }
+
+        if key == last_key {
+            // Same step continuing: extend it, keep the freshest evidence.
+            if let Some(step) = current.last_mut() {
+                step.sample = truncate(&item.text, 200);
+                if item.snapshot.is_some() {
+                    step.snapshot = item.snapshot.clone();
+                }
+                for entity in &item.entities {
+                    if !step.entities.iter().any(|e| e.value == entity.value) {
+                        step.entities.push(entity.clone());
+                    }
                 }
             }
-            case_start = Some(at);
-            distinct = 0;
-            last_raw.clear();
-        }
-
-        if app != last_raw {
-            distinct += 1;
-            last_raw = app.clone();
-        }
-
-        current.push(app);
-        last = Some(at);
-    }
-    if let (Some(start), Some(end)) = (case_start, last) {
-        if !current.is_empty() {
-            cases.push(Case {
-                steps: normalize(current),
-                start,
-                end,
+        } else {
+            let label = label_for(&item.app, &item.window, &item.text, &item.entities);
+            current.push(StepInstance {
+                key: key.clone(),
+                label,
+                app: item.app.clone(),
+                at: item.at,
+                snapshot: item.snapshot,
+                sample: truncate(&item.text, 200),
+                entities: item.entities,
             });
+            last_key = key;
         }
+
+        last = Some(item.at);
     }
+    flush(&mut current, case_start, last, &mut cases);
 
-    // A single-step case carries no flow; keep only real sequences.
-    let cases: Vec<Case> = cases.into_iter().filter(|c| c.steps.len() >= 2).collect();
-
-    // ── aggregate ──────────────────────────────────────────────────────────
-    let mut step_stats: BTreeMap<String, (u64, u64, f64)> = BTreeMap::new();
-    let mut edge_counts: BTreeMap<(String, String), u64> = BTreeMap::new();
+    // ── aggregate ───────────────────────────────────────────────────────────
+    let mut step_stats: BTreeMap<String, Step> = BTreeMap::new();
+    let mut successor: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
     let mut variant_stats: BTreeMap<Vec<String>, (u64, f64)> = BTreeMap::new();
-    let mut start_steps: BTreeMap<String, u64> = BTreeMap::new();
-    let mut end_steps: BTreeMap<String, u64> = BTreeMap::new();
+    let mut handoff_stats: BTreeMap<(String, String, String), u64> = BTreeMap::new();
     let mut total_steps = 0u64;
     let mut total_minutes = 0f64;
-    let mut seen_in_case: Vec<String> = Vec::new();
+    let mut run_list: Vec<Run> = Vec::new();
 
     for case in &cases {
+        let minutes = (case.end - case.start).num_seconds() as f64 / 60.0;
         total_steps += case.steps.len() as u64;
-        total_minutes += (case.end - case.start).num_seconds() as f64 / 60.0;
-        seen_in_case.clear();
+        total_minutes += minutes;
 
-        for (index, app) in case.steps.iter().enumerate() {
-            let entry = step_stats.entry(app.clone()).or_insert((0, 0, 0.0));
+        let keys: Vec<String> = case.steps.iter().map(|s| s.key.clone()).collect();
+        variant_stats.entry(keys.clone()).or_insert((0, 0.0));
+        if let Some(entry) = variant_stats.get_mut(&keys) {
             entry.0 += 1;
-            entry.2 += index as f64;
-            if !seen_in_case.iter().any(|seen| seen == app) {
-                seen_in_case.push(app.clone());
-                entry.1 += 1;
+            entry.1 += minutes;
+        }
+
+        for (index, step) in case.steps.iter().enumerate() {
+            let record = step_stats.entry(step.key.clone()).or_insert_with(|| Step {
+                key: step.key.clone(),
+                label: step.label.clone(),
+                app: step.app.clone(),
+                support: 0,
+                occurrences: 0,
+                position: 0.0,
+                first_seen: Some(step.at.to_rfc3339()),
+                snapshot: step.snapshot.clone(),
+                sample: step.sample.clone(),
+                entities: Vec::new(),
+                handoff: None,
+                next: Vec::new(),
+            });
+
+            record.support += 1;
+            record.occurrences += 1;
+            record.position += index as f64;
+
+            for entity in &step.entities {
+                if !record.entities.iter().any(|e| e.value == entity.value) {
+                    if record.entities.len() < 3 {
+                        record.entities.push(entity.clone());
+                    }
+                }
             }
-            if index > 0 {
-                *edge_counts
-                    .entry((case.steps[index - 1].clone(), app.clone()))
+
+            if index + 1 < case.steps.len() {
+                *successor
+                    .entry(step.key.clone())
+                    .or_default()
+                    .entry(case.steps[index + 1].key.clone())
                     .or_insert(0) += 1;
             }
         }
 
-        *start_steps.entry(case.steps[0].clone()).or_insert(0) += 1;
-        *end_steps.entry(case.steps[case.steps.len() - 1].clone()).or_insert(0) += 1;
+        // Handoffs: an identifier introduced here reappearing in another app.
+        let mut first_app: BTreeMap<String, &str> = BTreeMap::new();
+        for step in &case.steps {
+            for entity in &step.entities {
+                match first_app.get(&entity.value) {
+                    None => {
+                        first_app.insert(entity.value.clone(), step.app.as_str());
+                    }
+                    Some(from) if *from != step.app.as_str() => {
+                        let key = (
+                            entity.value.clone(),
+                            from.to_string(),
+                            step.app.clone(),
+                        );
+                        *handoff_stats.entry(key).or_insert(0) += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
 
-        let entry = variant_stats.entry(case.steps.clone()).or_insert((0, 0.0));
-        entry.0 += 1;
-        entry.1 += (case.end - case.start).num_seconds() as f64 / 60.0;
+        run_list.push(Run {
+            started_at: case.start.to_rfc3339(),
+            minutes,
+            steps: keys,
+            matched: false,
+        });
     }
 
     let case_count = cases.len() as u64;
@@ -255,37 +573,88 @@ pub fn compute(conn: &Connection, days: i64, exclude: &[String]) -> Result<FlowR
         .map(|v| v.cases as f64 / case_count.max(1) as f64)
         .unwrap_or(0.0);
 
-    let mut steps: Vec<FlowStep> = step_stats
-        .into_iter()
-        .map(|(app, (occurrences, cases, position_sum))| FlowStep {
-            avg_position: if occurrences > 0 {
-                position_sum / occurrences as f64
-            } else {
-                0.0
-            },
-            app,
-            occurrences,
-            cases,
-        })
-        .collect();
-    steps.sort_by(|a, b| b.cases.cmp(&a.cases).then(b.occurrences.cmp(&a.occurrences)));
+    // Standard path: the most common variant's steps, in order.
+    let standard_keys: Vec<String> = variants
+        .first()
+        .map(|v| v.steps.clone())
+        .unwrap_or_default();
 
-    let mut edges: Vec<FlowEdge> = edge_counts
-        .into_iter()
-        .map(|((from, to), count)| FlowEdge { from, to, count })
-        .collect();
-    edges.sort_by(|a, b| b.count.cmp(&a.count));
+    for run in &mut run_list {
+        run.matched = run.steps == standard_keys;
+    }
 
-    let mut start_steps: Vec<(String, u64)> = start_steps.into_iter().collect();
-    start_steps.sort_by(|a, b| b.1.cmp(&a.1));
-    let mut end_steps: Vec<(String, u64)> = end_steps.into_iter().collect();
-    end_steps.sort_by(|a, b| b.1.cmp(&a.1));
+    let mut standard: Vec<Step> = Vec::new();
+    for key in &standard_keys {
+        if let Some(mut step) = step_stats.get(key).cloned() {
+            step.next = successor
+                .get(key)
+                .map(|map| {
+                    let mut list: Vec<(String, u64)> =
+                        map.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                    list.sort_by(|a, b| b.1.cmp(&a.1));
+                    list
+                })
+                .unwrap_or_default();
+            standard.push(step);
+        }
+    }
+
+    // An identifier that shows up in a third of all steps is context (a project
+    // name, a chat subject), not a handoff — "INV-1842" was appearing because it
+    // was in the conversation text on screen, not because invoice work happened.
+    let step_total = step_stats.len().max(1);
+    let mut spread: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for step in step_stats.values() {
+        for entity in &step.entities {
+            spread
+                .entry(entity.value.clone())
+                .or_default()
+                .insert(step.key.clone());
+        }
+    }
+    let ubiquitous: BTreeSet<String> = spread
+        .into_iter()
+        .filter(|(_, keys)| keys.len() * 4 > step_total)
+        .map(|(value, _)| value)
+        .collect();
+
+    let handoffs: Vec<Handoff> = {
+        let mut list: Vec<Handoff> = handoff_stats
+            .into_iter()
+            .filter(|((entity, _, _), count)| *count >= 2 && !ubiquitous.contains(entity))
+            .map(|((entity, from, to), count)| Handoff {
+                entity,
+                from,
+                to,
+                count,
+            })
+            .collect();
+        list.sort_by(|a, b| b.count.cmp(&a.count));
+        list.truncate(12);
+        list
+    };
+
+    // Only identifiers that demonstrably moved between apps survive on a step.
+    // Anything else is screen text that happened to look like an id — our own
+    // conversation about "INV-1842" was showing up as a handoff.
+    let moved: BTreeSet<&str> = handoffs.iter().map(|h| h.entity.as_str()).collect();
+
+    for step in &mut standard {
+        step.entities.retain(|entity| {
+            !ubiquitous.contains(&entity.value) && moved.contains(entity.value.as_str())
+        });
+        if let Some(handoff) = handoffs.iter().find(|h| h.to.eq_ignore_ascii_case(&step.app)) {
+            step.handoff = Some(handoff.entity.clone());
+        }
+    }
+
+    let activities = step_stats.len() as u64;
 
     Ok(FlowReport {
         days,
         gap_seconds: GAP_SECONDS,
         cases: case_count,
-        activities: steps.len() as u64,
+        activities,
         events,
         avg_steps: if case_count > 0 {
             total_steps as f64 / case_count as f64
@@ -298,11 +667,11 @@ pub fn compute(conn: &Connection, days: i64, exclude: &[String]) -> Result<FlowR
             0.0
         },
         linearity,
-        steps,
-        edges,
+        standard,
         variants,
-        start_steps,
-        end_steps,
+        runs: run_list,
+        handoffs,
+        suppressed_apps: suppressed.into_iter().collect(),
     })
 }
 
@@ -310,57 +679,55 @@ pub fn compute(conn: &Connection, days: i64, exclude: &[String]) -> Result<FlowR
 mod tests {
     use super::*;
 
-    fn seq(apps: &[&str]) -> Vec<String> {
-        apps.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
-    fn collapses_repeats_and_drops_unknown() {
+    fn classifies_identifiers() {
+        assert_eq!(classify("INV-1842").map(|e| e.kind), Some("id".into()));
+        assert_eq!(classify("PO-1048,").map(|e| e.value), Some("PO-1048".into()));
+        assert_eq!(classify("$4,900.00").map(|e| e.kind), Some("amount".into()));
         assert_eq!(
-            normalize(seq(&["a.exe", "a.exe", "unknown", "b.exe", "a.exe"])),
-            seq(&["a.exe", "b.exe", "a.exe"])
+            classify("alder@packaging.com").map(|e| e.kind),
+            Some("email".into())
         );
+        assert_eq!(classify("https://x.test/a").map(|e| e.kind), Some("url".into()));
+        assert!(classify("Hello").is_none());
+        assert!(classify("2026-10-21").is_none(), "dates are not identifiers");
     }
 
     #[test]
-    fn builds_a_follows_graph_from_cases() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE frames (timestamp TEXT, app_name TEXT);
-             CREATE TABLE ui_events (timestamp TEXT, app_name TEXT);",
-        )
-        .unwrap();
+    fn strips_window_chrome() {
+        let text = "Minimize\nMaximize\nClose\nInspector: invoice INV-1842";
+        let cleaned = clean(text);
+        assert!(!cleaned.to_ascii_lowercase().contains("maximize"));
+        assert!(cleaned.contains("INV-1842"));
+    }
 
-        let now = chrono::Utc::now();
-        let at = |secs: i64| (now + chrono::Duration::seconds(secs)).to_rfc3339();
+    #[test]
+    fn labels_prefer_the_entity() {
+        let entities = entities_in("Invoice INV-1842 from Alder Packaging", 4);
+        let label = label_for("OUTLOOK.EXE", "Inbox", "Invoice INV-1842", &entities);
+        assert!(label.contains("INV-1842"), "got {label}");
+    }
 
-        // Two copies of the standard path a → b → c, plus one exception a → b → a.
-        for (i, path) in [["a", "b", "c"], ["a", "b", "c"], ["a", "b", "a"]].iter().enumerate() {
-            for (step, app) in path.iter().enumerate() {
-                conn.execute(
-                    "INSERT INTO frames (timestamp, app_name) VALUES (?1, ?2)",
-                    rusqlite::params![
-                        at(-3600 + (i as i64 * 600) + step as i64 * 10),
-                        format!("{app}.exe")
-                    ],
-                )
-                .unwrap();
-            }
-        }
+    #[test]
+    fn generic_window_falls_back_to_the_app_not_ocr() {
+        // A window titled the same as its app says nothing, and a slice of OCR is
+        // not a step name — fall back to the app.
+        let label = label_for("Hermes.exe", "Hermes", "deja flows redraw", &[]);
+        assert_eq!(label, "Hermes");
+    }
 
-        let report = compute(&conn, 7, &[]).unwrap();
-        assert_eq!(report.cases, 3, "three bursts, each separated by > 2 min");
-        assert_eq!(report.activities, 3);
+    #[test]
+    fn scrubs_paths_and_urls() {
+        let scrubbed = scrub_text("open https://x.test/a C:\\Users\\jagua\\x.exe now");
+        assert_eq!(scrubbed, "open now");
+    }
 
-        let a_to_b = report
-            .edges
-            .iter()
-            .find(|e| e.from == "a.exe" && e.to == "b.exe")
-            .map(|e| e.count)
-            .unwrap_or(0);
-        assert_eq!(a_to_b, 3, "a → b happens in every case");
-        assert!(report.linearity > 0.6, "two of three follow the standard path");
-        assert_eq!(report.variants[0].steps, seq(&["a.exe", "b.exe", "c.exe"]));
-        assert!(report.variants[0].standard);
+    #[test]
+    fn handoffs_need_a_different_app() {
+        // Same app twice is not a handoff; a new app carrying the identifier is.
+        let mut map: BTreeMap<String, &str> = BTreeMap::new();
+        map.insert("INV-1".into(), "a.exe");
+        assert_eq!(map.get("INV-1"), Some(&"a.exe"));
+        assert_ne!(map.get("INV-1"), Some(&"b.exe"));
     }
 }

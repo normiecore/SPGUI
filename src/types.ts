@@ -89,14 +89,37 @@ export interface Analytics {
   hourly: number[];
 }
 
-export interface FlowStep {
-  app: string;
-  occurrences: number;
-  cases: number;
-  avgPosition: number;
+export interface FlowEntity {
+  kind: string;
+  value: string;
 }
 
-export interface FlowEdge {
+export interface FlowStep {
+  key: string;
+  label: string;
+  app: string;
+  support: number;
+  occurrences: number;
+  position: number;
+  firstSeen: string | null;
+  snapshot: string | null;
+  sample: string;
+  entities: FlowEntity[];
+  /** Identifier that arrived here from another app. */
+  handoff: string | null;
+  /** Successor step key → count. */
+  next: [string, number][];
+}
+
+export interface FlowRun {
+  startedAt: string;
+  minutes: number;
+  steps: string[];
+  matched: boolean;
+}
+
+export interface FlowHandoff {
+  entity: string;
   from: string;
   to: string;
   count: number;
@@ -118,11 +141,12 @@ export interface FlowReport {
   avgSteps: number;
   avgMinutes: number;
   linearity: number;
-  steps: FlowStep[];
-  edges: FlowEdge[];
+  /** The standard path, in order, with evidence per step. */
+  standard: FlowStep[];
   variants: FlowVariant[];
-  startSteps: [string, number][];
-  endSteps: [string, number][];
+  runs: FlowRun[];
+  handoffs: FlowHandoff[];
+  suppressedApps: string[];
 }
 
 export interface TableSize {
