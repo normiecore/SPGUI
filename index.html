@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deja</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script type="module" src="/src/main.ts"></script>
+  </head>
+
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">D</div>
+          <div class="brand-text">
+            <strong>Deja</strong>
+            <span>you've seen this before</span>
+          </div>
+        </div>
+
+        <nav class="nav" id="nav">
+          <button class="nav-item" data-view="timeline" type="button">
+            <span class="nav-icon" aria-hidden="true">◧</span> Timeline <kbd>1</kbd>
+          </button>
+          <button class="nav-item" data-view="search" type="button">
+            <span class="nav-icon" aria-hidden="true">⌕</span> Search <kbd>2</kbd>
+          </button>
+          <button class="nav-item" data-view="analytics" type="button">
+            <span class="nav-icon" aria-hidden="true">▤</span> Analytics <kbd>3</kbd>
+          </button>
+          <button class="nav-item" data-view="plugins" type="button">
+            <span class="nav-icon" aria-hidden="true">⬡</span> Plugins <kbd>4</kbd>
+          </button>
+          <button class="nav-item" data-view="settings" type="button">
+            <span class="nav-icon" aria-hidden="true">⚙</span> Settings <kbd>5</kbd>
+          </button>
+        </nav>
+
+        <div class="sidebar-foot">
+          <div class="status-card">
+            <span class="dot" id="status-dot"></span>
+            <div>
+              <strong id="status-title">Connecting…</strong>
+              <span id="status-sub">Screenpipe</span>
+            </div>
+          </div>
+          <div class="storage" id="storage-line"></div>
+        </div>
+      </aside>
+
+      <main class="content">
+        <header class="topbar">
+          <div class="topbar-title">
+            <h1 id="view-title">Timeline</h1>
+            <p id="view-sub"></p>
+          </div>
+          <div class="topbar-actions" id="topbar-actions"></div>
+        </header>
+
+        <section class="view" id="view" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+{
+  "id": "daily-digest",
+  "name": "Daily digest",
+  "version": "0.1.0",
+  "description": "Writes a Markdown summary of the day's activity — top apps, busiest hours, and a sample of recent windows — into <app data>/exports.",
+  "kind": "digest",
+  "capabilities": ["read:analytics", "write:exports"],
+  "defaultEnabled": true,
+  "runtime": {
+    "command": "node",
+    "args": ["index.mjs"]
+  }
+}
